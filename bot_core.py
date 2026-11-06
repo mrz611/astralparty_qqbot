@@ -4,6 +4,7 @@
 import os, json, time, hashlib, threading, random
 from pathlib import Path
 from functools import wraps
+from match_history import MatchHistoryStore, merge_rows
 
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / 'userdata'
@@ -63,16 +64,31 @@ def build_profile(s2c):
             skins += 1
 
     cards = getattr(p, 'roleCard', {}) or {}
-    fc = _pairs(p, 17)
+    fc, wc = _pairs(p, 17), _pairs(p, 18)
     for hid, c in cards.items():
         n = int(getattr(c, 'fightCount', 0) or 0)
-        if n:
+        if n or int(hid) not in fc:
             fc[int(hid)] = n
     usage = sorted(((HERO.get(h, '角色#%d' % h), n) for h, n in fc.items() if n),
                    key=lambda x: -x[1])
 
+    character_stats = {}
+    for hid in set(fc) | set(wc) | set(cards):
+        card = cards.get(hid)
+        character_total = fc.get(hid)
+        won = wc.get(hid)  # Missing task entries are unknown, not zero wins.
+        strengthen = getattr(card, 'pve_strengthen', None)
+        character_stats[str(hid)] = {
+            'name': HERO.get(int(hid), '角色#%d' % int(hid)),
+            'total': character_total, 'wins': won,
+            'level': int(getattr(strengthen, 'level', 0) or getattr(card, 'lv', 0) or 0) if card is not None else None,
+            'owned': card is not None}
+    mode_counts = {str(k):int(v) for k,v in (getattr(p, 'mapModeCount', {}) or {}).items()}
+    mode_wins = {str(k):int(v) for k,v in (getattr(p, 'mapModeWinCount', {}) or {}).items()}
+
     recent = []
-    for r in list(getattr(sp, 'record', []) or []):
+    records = list(getattr(sp, 'record', []) or []) + list(getattr(sp, 'replayRecord', []) or [])
+    for r in records:
         rows = list(getattr(r, 'data', []) or [])
         mine = next((it for it in rows if int(getattr(it, 'playerId', 0) or 0) == my_uid), None)
         if mine is None:
@@ -81,18 +97,20 @@ def build_profile(s2c):
             'time': int(getattr(r, 'time', 0) or 0),
             'mode_id': int(getattr(r, 'mapType', getattr(mine, 'mapType', 0)) or 0),
             'mode': MODE.get(int(getattr(r, 'mapType', getattr(mine, 'mapType', 0)) or 0), '未知模式'),
+            'hero_id': int(getattr(mine, 'heroId', 0) or 0),
             'hero': HERO.get(int(getattr(mine, 'heroId', 0) or 0), '?'),
             'rank': int(getattr(mine, 'rank', 0) or 0),
             'replay': str(getattr(mine, 'replayId', '') or getattr(r, 'replayId', '') or ''),
         })
-    recent.sort(key=lambda x: -x['time'])
+    recent = merge_rows([], recent)
 
     return {'nick': getattr(p, 'nick', '?'), 'uid': my_uid,
             'level': int(getattr(p, 'level', 0) or 0),
             'total': total, 'wins': wins,
             'winrate': round(100.0 * wins / total, 1) if total else 0,
             'heroes': len(cards), 'skins': skins, 'praise': praise,
-            'usage': usage, 'recent': recent[:10]}
+            'character_stats': character_stats, 'mode_counts': mode_counts, 'mode_wins': mode_wins,
+            'usage': usage, 'hero_usage': {str(h): n for h, n in fc.items()}, 'recent': recent}
 
 
 def format_profile(p):
@@ -123,6 +141,7 @@ class AccountManager:
 
     def __init__(self):
         self._lock = threading.RLock()
+        self._history_store = MatchHistoryStore(DATA_DIR / 'match_history')
         self.acct_dir = DATA_DIR / 'accounts'
         self.acct_dir.mkdir(exist_ok=True)
         self.pending_phone = {}     # qq_uid -> 手机号（等验证码中）
@@ -213,18 +232,30 @@ class AccountManager:
                                heroes=int(stats.roleCardCount), skins=int(stats.skinCount),
                                praise=int(show.praiseNum))
             if show.isShowFight:
-                records = list(show.record) or list(show.replayRecord)
+                records = list(show.record) + list(show.replayRecord)
                 records.sort(key=lambda r: -int(r.time))
                 profile['recent'] = [
                     {'time': int(r.time), 'mode_id': int(r.mapType), 'mode': MODE.get(int(r.mapType), '未知模式'),
-                     'hero': HERO.get(int(r.heroId), '未知角色'), 'rank': int(r.rank),
-                     'replay': str(r.replayId)} for r in records[:10]]
+                     'hero_id': int(r.heroId), 'hero': HERO.get(int(r.heroId), '未知角色'), 'rank': int(r.rank),
+                     'replay': str(r.replayId)} for r in records]
             profile['stale'] = not (show.isShowData and show.isShowFight)
         except Exception as error:
             profile['stale'] = True
             print('[stats] 档案刷新失败，使用缓存:', type(error).__name__)
+        profile['recent'] = merge_rows([], profile.get('recent', []))
+        profile = self._remember_profile(profile)
         session['profile'] = profile
         return profile
+
+    def _remember_profile(self, profile):
+        store = getattr(self, '_history_store', None)
+        if store is None:
+            return profile
+        try:
+            return store.merge_profile(profile)
+        except (OSError, ValueError, TypeError) as error:
+            print('[history] 保存/读取对局历史失败:', type(error).__name__)
+            return dict(profile, history_error=True)
 
     def _enter(self, uid, sid):
         with self._lock:
@@ -258,7 +289,7 @@ class AccountManager:
                     old['client'].close()
                 except Exception:
                     pass
-            self.sessions[uid] = {'client': c, 'profile': build_profile(s2c), 'refreshed_at': time.monotonic()}
+            self.sessions[uid] = {'client': c, 'profile': self._remember_profile(build_profile(s2c)), 'refreshed_at': time.monotonic()}
             prof = self.sessions[uid]['profile']
             self._log_sessions()      # 上线即留痕：journalctl 可查，不落盘
             return prof

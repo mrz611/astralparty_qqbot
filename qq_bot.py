@@ -96,18 +96,18 @@ def save_card(png: bytes) -> str:
     return CARD_BASE.rstrip('/') + '/' + name
 
 
-def profile_of(qq_uid, view='overview', hero='', battle_type='pve', usage_card=False):
+def profile_of(qq_uid, view='overview', hero='', battle_type='pve', page=1, usage_card=False):
     query = StatsQuery(mgr, images=bool(CARD_BASE))
     query.usage_card = usage_card   # 中文 /我的 专用：角色使用排行卡；/atp me 保持原卡
-    result = query.mine(qq_uid, view, hero, battle_type)
+    result = query.mine(qq_uid, view, hero, battle_type, page)
     return Reply(result.text, result.image)
 
 
-def do_query(arg, requester=None, view='overview', hero='', battle_type='pve'):
+def do_query(arg, requester=None, view='overview', hero='', battle_type='pve', page=1):
     if not re.fullmatch(r'[0-9]{5,10}', arg):
         return '用法：/查 游戏UID [近期 或 角色 角色名]'
     try:
-        result = StatsQuery(mgr, images=bool(CARD_BASE)).player(arg, requester, view, hero, battle_type)
+        result = StatsQuery(mgr, images=bool(CARD_BASE)).player(arg, requester, view, hero, battle_type, page)
         return Reply(result.text, result.image)
     except Exception as error:
         print('[stats] 查询失败:', type(error).__name__)
@@ -116,14 +116,17 @@ def do_query(arg, requester=None, view='overview', hero='', battle_type='pve'):
 
 ATP_HELP = (
     '【ATP 战绩查询】默认 PVE\n'
-    '/atp me — 最近记录中的 PVE 战绩总览\n'
+    '/atp me — 账号 PVE 累计总览\n'
     '/atp me recent — 今日 PVE（北京时间）\n'
-    '/atp me char 芬妮 — 最近记录中的角色 PVE 战绩\n'
-    '/atp me pvp — PVP 战绩；/atp me all — 全部模式\n'
+    '/atp me char 芬妮 — 角色 PVE 汇总\n'
+    '/atp me pvp — PVP 累计；/atp me all — 全模式累计\n'
     '/atp me pvp recent — 今日 PVP\n'
+    '/atp me pvp char 芬妮 — 角色 PVP 汇总\n'
     '/atp 1234567 — 公开玩家 PVE 战绩\n'
-    '/atp 1234567 char 芬妮 — 公开玩家角色 PVE 战绩\n'
-    '仅在协议返回的最近 10 条内筛选，不能保证覆盖当日全部对局。\n'
+    '/atp 1234567 char 芬妮 — 公开协议无累计档案时显示缺失\n'
+    '· 角色支持中文名 / ID / 英文名：char 芬妮 / char 102 / char Fanny\n'
+    '· 翻页：/atp me page 2 或 /atp me recent page 2（每页20条）\n'
+    '总览读取累计档案；recent 使用今日可用记录。\n'
     '公开 UID 查询没有对局时间，不支持 recent。'
 )
 
@@ -146,25 +149,36 @@ def stats_command(text, requester):
         options = tokens[1:] if mine else tokens[2:]
     if not mine and not re.fullmatch(r'[0-9]{5,10}', target):
         return '用法：' + ATP_HELP
-    view, hero, battle_type = 'overview', '', 'pve'
-    selected_mode = False
+    view, hero, battle_type, page = 'overview', '', 'pve', 1
+    selected_mode = selected_page = False
+    reserved = {'pve', 'pvp', 'all', 'recent', '近期', '今日', 'char', '角色', 'page', '页'}
     while options:
         token, options = options[0].lower(), options[1:]
         if token in ('pve', 'pvp', 'all') and not selected_mode:
             battle_type, selected_mode = token, True
         elif token in ('recent', '近期', '今日') and view == 'overview':
             view = 'recent'
+        elif token in ('page', '页') and not selected_page and options and options[0].isascii() and options[0].isdigit():
+            if len(options[0]) > 6 or int(options[0]) < 1:
+                return '页码必须为正整数。'
+            page, selected_page, options = int(options[0]), True, options[1:]
         elif token in ('char', '角色') and view == 'overview' and options:
-            hero, view = ' '.join(options), 'hero'
-            options = []
+            names = []
+            while options and options[0].lower() not in reserved:
+                names.append(options.pop(0))
+            if not names:
+                return '用法：' + ATP_HELP
+            hero, view = ' '.join(names), 'hero'
         else:
             return '用法：' + ATP_HELP
+    page_args = {'page': page} if selected_page else {}
     if mine:
         if not requester:
             return '还没绑定。先在群里 /绑定，然后私聊完成绑定。'
         return profile_of(requester, view, hero, battle_type,
-                          usage_card=(tokens[0] in ('/我的', '我的') and view == 'overview'))
-    return do_query(target, requester, view, hero, battle_type)
+                          usage_card=(tokens[0] in ('/我的', '我的') and view == 'overview'),
+                          **page_args)
+    return do_query(target, requester, view, hero, battle_type, **page_args)
 
 
 def do_watch(arg):

@@ -237,8 +237,9 @@ def public_profile(uid, result):
     """公开协议仅提供身份和近期名次；不将未提供的累计指标伪装为零。"""
     info = result['info']
     recent = []
-    for r in list(result.get('records') or [])[:10]:
-        recent.append({'hero': HERO.get(int(getattr(r, 'heroId', 0) or 0), '未知角色'),
+    for r in list(result.get('records') or []):
+        recent.append({'hero_id': int(getattr(r, 'heroId', 0) or 0),
+                       'hero': HERO.get(int(getattr(r, 'heroId', 0) or 0), '未知角色'),
                        'rank': int(getattr(r, 'rank', 0) or 0),
                        'mode_id': int(getattr(r, 'mapType', 0) or 0),
                        'mode': MODE.get(int(getattr(r, 'mapType', 0) or 0), '未知模式')})

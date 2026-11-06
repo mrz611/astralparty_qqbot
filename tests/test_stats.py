@@ -2,7 +2,7 @@
 import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
-from stats_report import build_report, format_report
+from stats_report import build_sample_report as build_report, format_report
 from stats_query import StatsQuery
 import bot_ext
 from test_bot import bot
@@ -35,11 +35,11 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(report.heroes[0][0], '芬妮')
         self.assertEqual(self.profile['recent'][0].get('win'), None)
 
-    def test_filter_is_applied_after_ten_match_limit(self):
+    def test_character_after_tenth_record_is_not_discarded(self):
         rows = [{'hero': '芬妮', 'rank': 1}] * 10 + [{'hero': '帕露南', 'rank': 1}]
         report = build_report(self.profile, rows, 'hero', '帕露南', battle_type='all')
-        self.assertEqual(report.summary['count'], 0)
-        self.assertIn('暂无符合条件', format_report(report))
+        self.assertEqual(report.summary['count'], 1)
+        self.assertIn('帕露南', format_report(report))
 
     def test_empty_report_has_no_fabricated_winrate(self):
         report = build_report({}, [])
@@ -70,7 +70,8 @@ class ReportTests(unittest.TestCase):
                 patch('bot_viz.render_report_png', side_effect=RuntimeError('font')):
             result = StatsQuery(Mock(), images=True).present(self.profile, battle_type='all')
         self.assertIsNone(result.image)
-        self.assertIn('场均伤害 50', result.text)
+        self.assertIn('累计场次 100', result.text)
+        self.assertNotIn('场均伤害 50', result.text)
 
     def test_public_query_uses_same_report_and_renderer(self):
         with patch.object(bot_ext, 'query_uid', return_value={

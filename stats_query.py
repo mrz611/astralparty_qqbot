@@ -16,28 +16,34 @@ class StatsQuery:
         self.manager = manager
         self.images = images
 
-    def mine(self, openid, view='overview', hero='', battle_type='pve'):
+    def mine(self, openid, view='overview', hero='', battle_type='pve', page=1):
         profile, error = self.manager.get_profile(openid)
         if profile is None:
             return QueryResult(error)
-        return self.present(profile, view, hero, battle_type)
+        return self.present(profile, view, hero, battle_type, page)
 
-    def player(self, uid, requester=None, view='overview', hero='', battle_type='pve'):
+    def player(self, uid, requester=None, view='overview', hero='', battle_type='pve', page=1):
         if view == 'recent':
             return QueryResult('公开 UID 查询没有对局时间，无法查询今日战绩。请登录自己的账号后使用 /atp me recent。')
         result = bot_ext.query_uid(self.manager, uid, prefer_uid=requester)
         if not result.get('ok'):
             return QueryResult(result.get('msg') or '查询失败')
-        return self.present(bot_ext.public_profile(uid, result), view, hero, battle_type)
+        return self.present(bot_ext.public_profile(uid, result), view, hero, battle_type, page)
 
-    def present(self, profile, view='overview', hero='', battle_type='pve'):
+    def present(self, profile, view='overview', hero='', battle_type='pve', page=1):
         # Text and image use exactly the same sample and missing-data policy.
-        rows = profile.get('recent', [])[:10]
+        rows = list(profile.get('recent', []))
         now = datetime.now(BEIJING)
-        report = build_report(profile, rows, view, hero, battle_type, now=now)
-        if self.images:
-            enriched = bot_ext.replay_rows(dict(profile, recent=report.rows))
-            enriched_report = build_report(profile, enriched, view, hero, battle_type, now=now)
+        try:
+            report = build_report(profile, rows, view, hero, battle_type, now=now, page=page)
+        except ValueError as error:
+            return QueryResult(str(error))
+        if self.images and not report.cumulative:
+            enriched = bot_ext.replay_rows(dict(profile, recent=report.display_rows))
+            combined = list(report.rows)
+            start = (report.page - 1) * report.page_size
+            combined[start:start + len(enriched)] = enriched
+            enriched_report = build_report(profile, combined, view, hero, battle_type, now=now, page=page)
             enriched_report.sample_count = report.sample_count
             enriched_report.missing_time = report.missing_time
             report = enriched_report

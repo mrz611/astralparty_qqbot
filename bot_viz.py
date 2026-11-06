@@ -88,7 +88,88 @@ def _row(draw, y, columns, values, index, colors=None, bold=False):
     return y + 46
 
 
+def render_career_report(report):
+    p, stats = report.profile, report.summary
+    role = report.view == 'hero'
+    observed = (report.character_info or {}).get('selected_source')=='observed'
+    mode_label = {'pve':'PVE','pvp':'PVP','all':'全模式'}[report.battle_type]
+    columns = [(40,310),(310,460),(460,600),(600,780),(780,970),(970,1160)]
+    headings = ['统计类型','场次','胜场','胜率','场均伤害','场均转账']
+    def values(name, data):
+        return [name, _num(data['count']), _num(data['wins']), percent(data['winrate']), _num(data.get('damage')), _num(data.get('transfer'))]
+    sections = [('总体数据', '已采集汇总，非完整累计' if role and observed else '累计档案口径', headings,
+                 [values(name,data) for name,data in report.modes])]
+    if role:
+        info = report.character_info or {}
+        sections.append(('角色资料', report.hero, ['项目','数据','项目','数据','项目','数据'], [
+            ['角色 ID',str(report.character_id), '角色等级',_num(info.get('level')), '拥有状态',
+             '已拥有' if info.get('owned') is True else '未拥有' if info.get('owned') is False else '—'],
+            ['累计伤害','—','累计转账','—','统计范围',mode_label]]))
+    else:
+        sections.append(('角色数据 · '+mode_label+(' · 已采集' if observed else ' · 累计'), f'第 {report.page}/{report.pages} 页 · 共 {len(report.heroes)} 位',
+                         ['角色','累计场次','累计胜场','胜率','场均伤害','场均转账'],
+                         [values(name,data) for name,data in report.display_heroes]))
+    bars = report.heroes[:6] if not role else []
+    chart_height = 72 + len(bars)*36 if bars else 0
+    height = 396 + sum(48+40+max(1,len(s[3]))*46+22 for s in sections) + chart_height + 88
+    img = Image.new('RGB',(1200,height),'#F5F6F8')
+    d = ImageDraw.Draw(img)
+    d.rectangle((24,24,1176,height-24),fill='white')
+    title = '角色'+mode_label+'总览' if role else '个人'+mode_label+'累计总览'
+    d.text((40,49),'ASTRAL PARTY  /  '+title,font=F(18,True),fill=MUTED,anchor='lm')
+    nick,font = _fit(d,p.get('nick','未知玩家'),1100,43,True)
+    d.text((40,96),nick,font=font,fill=INK,anchor='lm')
+    meta = f"国服 · UID {p.get('uid','—')} · Lv.{_num(p.get('level'))}"
+    if role:
+        meta += ' · '+report.hero
+    meta,font = _fit(d,meta,1100,22)
+    d.text((40,142),meta,font=font,fill=MUTED,anchor='lm')
+    d.rectangle((40,174,1160,228),fill='#318B25')
+    bar = mode_label+(' · 已采集汇总' if role and observed else ' · 累计')
+    d.text((56,201),bar,font=F(27,True),fill='white',anchor='lm')
+    d.text((1144,201),'胜率  '+percent(stats['winrate']),font=F(30,True),fill='white',anchor='rm')
+    metrics = [('已采集场次' if role and observed else '累计场次',_num(stats['count'])),
+               ('样本胜率' if role and observed else '累计胜率',percent(stats['winrate'])),
+               ('样本胜场' if role and observed else '累计胜场',_num(stats['wins'])),
+               ('场均伤害',_num(stats.get('damage'))),('场均转账',_num(stats.get('transfer')))]
+    for i,(label,value) in enumerate(metrics):
+        x=40+i*224
+        d.rectangle((x,246,x+212,340),fill='#F2F4F6')
+        d.text((x+106,268),label,font=F(20,True),fill=MUTED,anchor='mm')
+        value,font=_fit(d,value,200,34,True)
+        d.text((x+106,309),value,font=font,fill=PURPLE if i==1 else INK,anchor='mm')
+        d.line((x,340,x+212,340),fill='#97BDCF',width=2)
+    note = (report.character_info or {}).get('mode_note','角色档案累计未按模式拆分。') if role else '账号按所选模式累计；下方角色列表为'+mode_label+('已采集统计。' if observed else '累计统计。')
+    if p.get('source') == 'public':
+        note = '公开协议未提供累计档案，本图不以最近对局推算累计数据。'
+    d.text((40,362),note,font=F(17),fill=MUTED,anchor='lm')
+    y=396
+    for title,note,labels,rows in sections:
+        y=_section(d,y,title,note)
+        y=_table_header(d,y,columns,labels)
+        for i,values_ in enumerate(rows or [['档案未提供']+['—']*5]):
+            y=_row(d,y,columns,values_,i,{3:PURPLE} if title.startswith(('总体','角色数据')) else {})
+        y+=22
+    if bars:
+        y=_section(d,y,'角色出场分布','全模式累计 · 前 6 位')
+        maximum=max([data['count'] or 0 for _,data in bars] or [1]) or 1
+        for name,data in bars:
+            _cell(d,(40,300),y+15,name,left=True,size=20)
+            width=720*(data['count'] or 0)/maximum
+            d.rectangle((320,y+4,1040,y+26),fill='#F0F2F5')
+            if width:
+                d.rectangle((320,y+4,320+width,y+26),fill='#82BBD2')
+            d.text((1140,y+15),_num(data['count']),font=F(20,True),fill=INK,anchor='rm')
+            y+=36
+        y+=24
+    d.text((40,y+4),'— 表示档案未提供该指标；模式场均仅计算有指标的已采集对局。',font=F(17),fill=MUTED,anchor='lm')
+    d.text((40,y+30),'本图不含逐场明细；/atp me recent 保留今日记录视图。',font=F(17),fill=MUTED,anchor='lm')
+    return img
+
+
 def render_report(report):
+    if report.cumulative:
+        return render_career_report(report)
     """纯展示层：不访问网络，不在绘制时再次计算战绩。"""
     p, summary = report.profile, report.summary
     titles = {'overview': '战绩总览', 'recent': '今日战绩', 'hero': '角色战绩'}
@@ -103,6 +184,8 @@ def render_report(report):
     if report.view == 'overview' and report.battle_type == 'all':
         overall.append(['累计战绩', _num(p.get('total')), _num(p.get('wins')),
                         percent(p.get('winrate')), '—', '—'])
+    if report.character_total is not None:
+        overall.append(['角色档案·全模式', _num(report.character_total), '—', '—', '—', '—'])
     overall.append(stats_row('筛选样本', summary))
     overall.extend(stats_row(mode, stats) for mode, stats in report.modes)
     sections = [('总体数据' if report.view == 'overview' else '样本统计',
@@ -114,11 +197,11 @@ def render_report(report):
                          hero_rows, {3: PURPLE, 4: GREEN, 5: GREEN}))
     detail_columns = [(40, 110), (110, 350), (350, 610), (610, 810), (810, 1010), (1010, 1160)]
     details = []
-    for i, row in enumerate(report.rows):
+    for i, row in enumerate(report.display_rows, start=(report.page - 1) * report.page_size):
         outcome = '胜' if row['win'] is True else '负' if row['win'] is False else '未知'
         details.append([f'{i+1:02}', row['hero'], row['mode'],
                         _num(row['damage']), _num(row['transfer']), outcome])
-    sections.append(('对局明细', f"最近样本内匹配 {summary['count']} 场", detail_columns,
+    sections.append(('对局明细', f"第 {report.page}/{report.pages} 页 · 共 {summary['count']} 场", detail_columns,
                      ['序号', '角色', '模式', '伤害', '转账', '结果'], details, {}))
     height = 396 + sum(48 + 40 + max(1, len(section[4])) * 46 + 22 for section in sections) + 84
     img = Image.new('RGB', (1200, height), '#F5F6F8')
@@ -181,7 +264,7 @@ def render_report(report):
         y += 22
     d.text((40, y+5), f"伤害有效样本 {summary['damage_count']} 场 · 转账有效样本 {summary['transfer_count']} 场；均值不含缺失项。",
            font=F(17), fill=MUTED, anchor='lm')
-    d.text((40, y+30), f'仅筛选协议最近 10 条，不保证覆盖今日全部对局；{report.missing_time} 条缺少时间被排除。',
+    d.text((40, y+30), f'仅含已获取/保存的历史，非完整生涯；每页 {report.page_size} 条；{report.missing_time} 条无时间记录已排除。',
            font=F(17), fill=MUTED, anchor='lm')
     return img
 
