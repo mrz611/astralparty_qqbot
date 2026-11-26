@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""星趴评分插件：/评分 16位回放号 → 四人单局评分与同条件百分位。
+"""星趴评分插件：/评分 16位回放号 → 四人单局评分卡。
 
 通过 rate 包导入，不向 sys.path 插入 rate/，避免 rate/astral 抢占主 bot
 的 astral 包并影响复盘渲染。RATE_PLUGIN=0 可禁用。
@@ -11,16 +11,29 @@ import sys
 _LOADED = False
 
 
-def _route_rate(text):
+def _route_rate(text, qb):
     match = re.match(r"^/评分\s+(\d{16})\s*$", text or "")
     if not match:
         return None
     try:
         from rate import rate_core
 
-        return rate_core.rate_replay(match.group(1))
+        result = rate_core.score_replay(match.group(1))
     except Exception as exc:
         return "评分出错：%s" % exc
+    if isinstance(result, str):
+        return result
+
+    fallback = result.as_text()
+    if not qb.CARD_BASE or all(player.score is None for player in result.players):
+        return fallback
+    try:
+        from rate.score_viz import render_score_png
+
+        return qb.Reply(fallback, render_score_png(result))
+    except Exception as exc:
+        print("[rate] 评分图生成失败，回退纯文字:", type(exc).__name__)
+        return fallback
 
 
 def mount():
@@ -41,11 +54,11 @@ def mount():
     orig_priv, orig_grp = qb.handle_private, qb.handle_group
 
     def _priv(text, uid):
-        result = _route_rate(text)
+        result = _route_rate(text, qb)
         return result if result is not None else orig_priv(text, uid)
 
     def _grp(text, mo):
-        result = _route_rate(text)
+        result = _route_rate(text, qb)
         return result if result is not None else orig_grp(text, mo)
 
     qb.handle_private = _priv

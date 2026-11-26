@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
 """回放号 → 四名玩家的 36 角色单局表现量表评分。
 
-保留原插件的回放下载、解析和文本返回接口；评分层由 models.json
-切换为 scales/ 中各角色冻结的 JSON + NPZ 参考分布。
+使用 scales/ 中各角色冻结的 JSON + NPZ 参考分布。
 """
 import json
 import re
 import urllib.error
 import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
 
 import pandas as pd
@@ -20,6 +20,38 @@ CALIB_MAP = 82017
 CALIB_DIFF = 3
 TOTAL_COLS = ["dmg", "transfer", "move", "tret", "inj"]
 KEY = ["replay_id", "uid"]
+SCALE_VERSION = "v0.1"
+
+
+@dataclass(frozen=True)
+class PlayerRating:
+    nick: str
+    hero: str
+    score: float | None = None
+    percentile: float | None = None
+    usage: str = ""
+    error: str | None = None
+
+
+@dataclass(frozen=True)
+class ReplayRating:
+    replay_id: str
+    players: tuple[PlayerRating, ...]
+
+    def as_text(self):
+        lines = [f"回放 {self.replay_id}｜36角色单局量表 {SCALE_VERSION}"]
+        for player in self.players:
+            name = f"{player.nick}（{player.hero}）"
+            if player.error is not None:
+                lines.append(f"{name}：无法评分（{player.error}）")
+                continue
+            suffix = f"［{player.usage}］" if player.usage else ""
+            lines.append(
+                f"{name}：本局评分 {player.score:.2f}｜"
+                f"同条件百分位 {player.percentile:.2f}%{suffix}"
+            )
+        lines.append("百分位按同角色、同地图、同难度冻结样本计算，不代表长期实力或胜率。")
+        return "\n".join(lines)
 
 
 def load_hero_names():
@@ -136,18 +168,18 @@ def _merge_total_fields(features, rounds):
     return merged
 
 
-def _usage_suffix(result):
+def _usage_label(result):
     """显示状态只读取元数据，不按角色名另写规则。"""
     confidence = result.get("sample_confidence")
     if confidence == "低":
-        return "［" + (result.get("usage_label") or "实验性") + "］"
+        return result.get("usage_label") or "实验性"
     if confidence == "中":
-        return "［谨慎使用］"
+        return "谨慎使用"
     return ""
 
 
-def rate_replay(replay_id, scales_path=None):
-    """返回可直接发送到 QQ 的四人评分文本。"""
+def score_replay(replay_id, scales_path=None) -> ReplayRating | str:
+    """计算供图片和文字共用的评分，或返回整局的不可评分原因。"""
     replay_id = str(replay_id)
     if not re.fullmatch(r"\d{16}", replay_id):
         raise RuntimeError("回放号应为 16 位数字")
@@ -179,25 +211,28 @@ def rate_replay(replay_id, scales_path=None):
             f"本局：地图 {map_id}·难度 {difficulty}"
         )
 
-    out = [f"回放 {replay_id}｜36角色单局量表 v0.1"]
+    ratings = []
     for _, row in features.iterrows():
         nick = str(row.get("nick") or row.get("uid") or "未知玩家")
         hero = str(row.get("hero_name") or f'#{row.get("hero_id")}')
         try:
             result = bank.score_one(row.to_dict())
         except (ScaleError, KeyError, TypeError, ValueError) as exc:
-            out.append(f"{nick}（{hero}）：无法评分（{exc}）")
+            ratings.append(PlayerRating(nick, hero, error=str(exc)))
             continue
-        hero = result["hero_name"] or hero
-        score = 100.0 * result["raw_score"]
-        percentile = result["overall_percentile"]
-        out.append(
-            f"{nick}（{hero}）：本局评分 {score:.2f}｜"
-            f"同条件百分位 {percentile:.2f}%{_usage_suffix(result)}"
-        )
+        ratings.append(PlayerRating(
+            nick, result["hero_name"] or hero,
+            score=100.0 * result["raw_score"],
+            percentile=result["overall_percentile"],
+            usage=_usage_label(result),
+        ))
+    return ReplayRating(replay_id, tuple(ratings))
 
-    out.append("百分位按同角色、同地图、同难度冻结样本计算，不代表长期实力或胜率。")
-    return "\n".join(out)
+
+def rate_replay(replay_id, scales_path=None):
+    """保留原有的四人评分文本接口。"""
+    result = score_replay(replay_id, scales_path)
+    return result if isinstance(result, str) else result.as_text()
 
 
 if __name__ == "__main__":

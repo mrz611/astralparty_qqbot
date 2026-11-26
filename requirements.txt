@@ -1,3 +1,5 @@
 qq-botpy>=1.2
 protobuf>=4.21
 Pillow>=9.0
+numpy
+pandas
